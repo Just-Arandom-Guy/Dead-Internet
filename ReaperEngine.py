@@ -7,6 +7,7 @@ I apologise for it sounding pretentious or whatever, but I dont care it sounds c
 and fits with the Dead Internet Theory theme of this little project
 '''
 
+
 class ReaperEngine:
     def __init__(self):
         self.client = OpenAI(base_url="http://localhost:11434/v1/", api_key="Dead Internet") # Ollama is pretty cool
@@ -15,9 +16,9 @@ class ReaperEngine:
         self.temperature = 2.1 # Crank up for goofier webpages (but probably less functional javascript)
         self.max_tokens = 4096
         self.system_prompt = "You are an expert in creating realistic webpages. You do not create sample pages, instead you create webpages that are completely realistic and look as if they really existed on the web. You do not respond with anything but HTML, starting your messages with <!DOCTYPE html> and ending them with </html>.  You use very little to no images at all in your HTML, CSS or JS, and when you do use an image it'll be linked from a real website instead. Link to very few external resources, CSS and JS should ideally be internal in <style>/<script> tags and not linked from elsewhere."
-    
+
     def _format_page(self, dirty_html):
-        # Teensy function to sanitize links on the page so they link to the root of the server
+        # Teensy function to sanitize links on the page, so they link to the root of the server
         # Also to get rid of any http(s), this'll help make the link database more consistent
         soup = BeautifulSoup(dirty_html, "html.parser")
         for a in soup.find_all("a"):

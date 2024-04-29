@@ -7,10 +7,11 @@ from ReaperEngine import *
 app = flask.Flask(__name__)
 engine = ReaperEngine()
 
+
 @app.route("/", defaults={'path': ''})
 @app.route('/<path:path>')
 def index(path):
-    # Handle search and no seach
+    # Handle search and no search
     query = flask.request.args.get("query")
     if not query and not path:
         return engine.get_index()
@@ -24,9 +25,11 @@ def index(path):
     generated_page = engine.get_page(parsed_path.netloc, path=parsed_path.path)
     return generated_page
 
+
 if __name__ == "__main__":
     # Use threading to open the browser a bit after the server starts
     from threading import Timer
+
     def open_browser():
         webbrowser.open("http://127.0.0.1:5000")
     Timer(1, open_browser).start()  # Wait 1 second for the server to start
