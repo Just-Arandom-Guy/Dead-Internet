@@ -12,19 +12,28 @@ engine = ReaperEngine()
 @app.route("/", defaults={'path': ''})
 @app.route('/<path:path>')
 def index(path):
-    # Handle search and no search
-    query = flask.request.args.get("query")
-    if not query and not path:
-        return engine.get_index()
-    if query and not path:
-        return engine.get_search(query)
-    if path == "_export":
-        return engine.export_internet()
-    
-    # Generate the page
-    parsed_path = urlparse("http://" + path)
-    generated_page = engine.get_page(parsed_path.netloc, path=parsed_path.path)
-    return generated_page
+    def attempt_operation():
+        # Handle search and no search
+        query = flask.request.args.get("query")
+        if not query and not path:
+            return engine.get_index()
+        if query and not path:
+            return engine.get_search(query)
+        if path == "_export":
+            return engine.export_internet()
+
+        # Generate the page
+        parsed_path = urlparse("http://" + path)
+        generated_page = engine.get_page(parsed_path.netloc, path=parsed_path.path)
+        return generated_page
+
+    for attempt in range(3):
+        try:
+            return attempt_operation()
+        except Exception as e:
+            print(f"Attempt {attempt + 1} failed: {e}")
+            if attempt == 2:  # If it's the last attempt, raise the exception
+                raise
 
 
 if __name__ == "__main__":

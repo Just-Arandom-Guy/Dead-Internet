@@ -1,6 +1,8 @@
 import json
 from openai import OpenAI
 from bs4 import BeautifulSoup
+import re
+from datetime import datetime
 
 ''' About the name...
 I apologise for it sounding pretentious or whatever, but I dont care it sounds cool and cyberpunk-y(-ish)
@@ -10,19 +12,32 @@ and fits with the Dead Internet Theory theme of this little project
 
 class ReaperEngine:
     def __init__(self):
-        self.client = OpenAI(base_url="http://localhost:11434/v1/", api_key="Dead Internet")  # Ollama is pretty cool
+        # groq not local but so fast that the browsing feels quite normal
+        self.client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key="")
+        self.model = "llama3-8b-8192"
+
+        # ollama local and ok with gpu but nothing compared to groq
+        # self.client = OpenAI(base_url="http://localhost:11434/v1/", api_key="Dead Internet")  # Ollama is pretty cool
+        # self.model = "llama3"
+
         self.internet_db = dict()  # TODO: Exporting this sounds like a good idea, losing all your pages when you kill the script kinda sucks ngl, also loading it is a thing too
 
-        self.temperature = 2.1  # Crank up for goofier webpages (but probably less functional javascript)
+        self.temperature = 0.5  # Crank up for goofier webpages (but probably less functional javascript, and it will probably error out a lot)
         self.max_tokens = 4096
-        self.system_prompt = "You are an expert in creating realistic webpages. You do not create sample pages, instead you create webpages that are completely realistic and look as if they really existed on the web. You do not respond with anything but HTML, starting your messages with <!DOCTYPE html> and ending them with </html>.  You use very little to no images at all in your HTML, CSS or JS, and when you do use an image it'll be linked from a real website instead. Link to very few external resources, CSS and JS should ideally be internal in <style>/<script> tags and not linked from elsewhere."
+
+        # 1. base prompt 2. Image prompt thingy(you can make it generate links and alt for sdxl turbo) 3. Output style CoT
+        self.system_prompt = "You are an expert in creating realistic webpages. You do not create sample pages, instead you create webpages that are completely realistic and look as if they really existed on the web. During this process make sure the websites are quite long and include all needed details. You do not respond with anything but HTML, starting your messages with <!DOCTYPE html> and ending them with </html>. If a requested page is not a HTML document, for example a CSS or Javascript file, write that language instead of writing any HTML."
+        self.system_prompt += " If the requested page is instead an image file or other non-text resource, attempt to generate an appropriate resource while avoiding using images. You use no images at all in your HTML, CSS or JS."
+        self.system_prompt += "\n\nThe response should have two parts to it **Planning Stage**, **HTML**. First planning indicated by **Planning Stage** in which you plan out any elements(try not to do anything to complex and stick with simple but modern design. Try to avoid gradients as they often have problems) that are needed as well as any text. This should be quite detailed to create a modern realistic webpage with all required things. Make sure you plan enough to fill the entire website adequately so dont cut it short. This means you leave no placeholders and fully plan out all text. You dont only plan, but also write all text that should be present later. The text should have at least 500 words that will be on the webpage depending on the type. You do not create any code during this stage. The next stage is writing the html. To do this simpy start with <!DOCTYPE html> and generate the needed code based of the previous plan following all instructions. You have to generate all parts, none are optional **Planning Stage**, **HTML**. Stick to a dark mode color Theme and include lots of links throughout the page not just at the end but for all important things."
+
+        self.search_system_prompt = "Create at least 10 different results for the query from the user. Your answer should have this format. 1. [TITLE:INSERT_TITLE_HERE] of course replace INSERT_TITLE_HERE with the actual title of the website. It should be relatively short but informative just like google results. 2. [DESCRIPTION:INSERT_DESCRIPTION_HERE] it should in a few words convey the most important info on the webpage. 3. [LINK:INSERT_LINK_HERE] It should have all needed info about the page it links to so dont shorten it at all. Here is a example of how a part of your response could look like. [TITLE:The Tree Encyclopedia: A Comprehensive Guide] \n [DESCRIPTION:Explore the world of trees, from their evolution to their uses, and get information on over 1,000 species.]\n [LINK:https://www.treecyclopedia.org/guide/history+evolution+uses+species] then just start with the next result. Repeat this for all requested results. Of course dont include any placeholders and instead replace them with proper information. Make sure you stick to the format at all times without exceptions."
 
     def _format_page(self, dirty_html):
+        dirty_html = self.remove_images(dirty_html)
         # Teensy function to sanitize links on the page, so they link to the root of the server
         # Also to get rid of any http(s), this will help make the link database more consistent
         soup = BeautifulSoup(dirty_html, "html.parser")
         for a in soup.find_all("a"):
-            print(a["href"])
             if "mailto:" in a["href"]:
                 continue
             a["href"] = a["href"].replace("http://", "")
@@ -39,17 +54,111 @@ class ReaperEngine:
         if body:
             body.insert(0, home_button)
 
-        return str(soup)
-    
-    def get_index(self):
-        # Super basic start page, just to get everything going
-        return "<!DOCTYPE html><html><body><h3>Enter the Dead Internet</h3><form action='/' ><input name='query'> <input type='submit' value='Search'></form></body></html>"
+        html = str(soup)
+        return html
 
-    def get_page(self, url, path, query=None):
+    def separate_html_parts(self, html):
+        doctype_index = html.lower().find('<!doctype html>')
+        if doctype_index == -1:
+            raise ValueError("HTML does not start with <!DOCTYPE html>")
+        return html[doctype_index:]
+
+    def remove_images(self, html):
+        # Remove img tags
+        html = re.sub(r'<img.*?>', '', html)
+
+        # Remove image links (e.g. <a href="image.jpg">)
+        html = re.sub(r'<a.*?href="[^"]+\.(jpg|jpeg|png|gif|bmp)".*?</a>', '', html)
+
+        # Remove background-image CSS properties
+        html = re.sub(r'background-image:\s*url\([^)]+\);', '', html)
+
+        # Remove image references in CSS styles (e.g. style="background-image: url('image.jpg')")
+        html = re.sub(r'style="[^"]*background-image:\s*url\([^"]+\)[^"]*"', '', html)
+
+        # Remove image references in HTML attributes (e.g. <div data-src="image.jpg">)
+        html = re.sub(r'\b(data-src|src|lowsrc)="[^"]+\.(jpg|jpeg|png|gif|bmp)"', '', html)
+
+        return html
+
+    def get_index(self):
+        return """
+        <!DOCTYPE html>
+<html>
+<head>
+    <title>Dead Internet</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #222;
+            color: #fff;
+        }
+        .container {
+            max-width: 600px;
+            margin: 100px auto;
+            text-align: center;
+        }
+        .logo {
+            font-size: 36px;
+            font-weight: bold;
+            color: #fff;
+        }
+        .search-form {
+            margin-top: 40px;
+        }
+        .search-input {
+            width: 100%;
+            height: 50px;
+            font-size: 18px;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 25px;
+            background-color: #333;
+            color: #fff;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        .search-button {
+            height: 50px;
+            font-size: 18px;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 25px;
+            background-color: #4285f4;
+            color: #fff;
+            cursor: pointer;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        .search-button:hover {
+            background-color: #357ae8;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">Dead Internet</div>
+        <form class="search-form" action="/">
+            <input class="search-input" type="text" name="query" placeholder="Search the Dead Internet">
+            <input class="search-button" type="submit" value="Search">
+        </form>
+    </div>
+</body>
+</html>
+        """
+
+    def get_page(self, url, path):
         # Return already generated page if already generated page
         generated_page = self.internet_db.get(url, {}).get(path)
         if generated_page:
             return generated_page
+
+        current_time = datetime.now()
+        # Format date and time
+        formatted_date = current_time.strftime("%A, %d %B %Y %H:%M:%S")
+
+        # Append to system prompt
+        system_prompt = self.system_prompt + f"Today is the {formatted_date}"
         
         # Construct the basic prompt
         prompt = f"Give me a classic geocities-style webpage from the fictional site of '{url}' at the resource path of '{path}'. Make sure all links generated either link to an external website, or if they link to another resource on the current website have the current url prepended ({url}) to them. For example if a link on the page has the href of 'help' or '/help', it should be replaced with '{url}/path'. All your links must use absolute paths, do not shorten anything. Make the page look nice and unique using internal CSS stylesheets, don't make the pages look boring or generic."
@@ -63,13 +172,13 @@ class ReaperEngine:
         generated_page_completion = self.client.chat.completions.create(messages=[
             {
                 "role": "system",
-                "content": self.system_prompt
+                "content": system_prompt
             },
             {
                 "role": "user",
                 "content": prompt
             }],
-            model="llama3",  # What a great model, works near perfectly with this, shame its only got 8k context (does Ollama even set it to that by default?)
+            model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens
         )
@@ -78,6 +187,9 @@ class ReaperEngine:
         generated_page = generated_page_completion.choices[0].message.content
         with open("curpage.html", "w+") as f:
             f.write(generated_page)
+
+        # separate the different parts of the answer before further processing
+        generated_page = self.separate_html_parts(generated_page)
         generated_page = self._format_page(generated_page)
 
         # Add the page to the database
@@ -89,22 +201,152 @@ class ReaperEngine:
         return generated_page
 
     def get_search(self, query):
-        # Generates a cool little search page, this differs in literally every search and is not cached so be weary of losing links
-        search_page_completion = self.client.chat.completions.create(messages=[
+        current_time = datetime.now()
+        # Format date and time
+        formatted_date = current_time.strftime("%A, %d %B %Y %H:%M:%S")
+
+        # Append to system prompt
+        search_system_prompt = self.search_system_prompt + f"Today is the {formatted_date}"
+
+        search_page_sites = self.client.chat.completions.create(messages=[
             {
                 "role": "system",
-                "content": self.system_prompt
+                "content": search_system_prompt
             },
             {
                 "role": "user",
-                "content": f"Generate the search results page for a fictitious search engine where the search query is '{query}'. Please include at least 10 results to different fictitious websites that relate to the query. DO NOT link to any real websites, every link should lead to a fictitious website. Feel free to add a bit of CSS to make the page look nice. Each search result will link to its own unique website that has nothing to do with the search engine and is not a path or webpage on the search engine's site. Make sure each fictitious website has a unique and somewhat creative URL. Don't mention that the results are fictitious."
+                "content": f"Generate the search results for a fictitious search engine where the search query is '{query}'. Please include at least 10 results to different fictitious websites that relate to the query. Each search result will have a link to the site it referring to. Make sure each fictitious website has a unique and somewhat creative URL with lots of info. Don't mention that the results are fictitious."
             }],
-            model="llama3",
+            model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens
         )
 
-        return self._format_page(search_page_completion.choices[0].message.content)
+        site_array = self.separate_sites(search_page_sites.choices[0].message.content)
+        html = self.create_search_site(site_array, query)
+        html = self._format_page(html)
+        return html
+
+    def create_search_site(self, site_array, query):
+        """
+        :param site_array: Array of sites where each site is a list [title, description, link]
+        :param query: Search query string
+        :return: HTML string representing the search results page
+
+        Create a modern search results page with a dark mode style and rounded edges.
+        """
+
+        # Start the HTML output with a modern dark mode style
+        html = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <title>Search Results</title>
+        <style>
+        body {{
+            background-color: #1c1c1c;
+            color: #e6e6e6;
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }}
+
+        .container {{
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }}
+
+        .search-header {{
+            text-align: center;
+            margin-bottom: 30px;
+        }}
+
+        .search-results {{
+            list-style-type: none;
+            padding: 0;
+        }}
+
+        .search-result {{
+            background-color: #2d2d2d;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }}
+
+        .search-result a {{
+            color: #e6e6e6;
+            text-decoration: none;
+        }}
+
+        .search-result a:hover {{
+            text-decoration: underline;
+        }}
+
+        .search-result .description {{
+            font-size: 14px;
+            color: #b3b3b3;
+            margin-top: 5px;
+        }}
+        </style>
+        </head>
+        <body>
+        <div class="container">
+        <div class="search-header">
+            <h1>Searched for: {query}</h1>
+        </div>
+        <ul class="search-results">
+        """
+
+        # Loop through the site array and create list items for each site
+        for site in site_array:
+            title, description, link = site
+            html += f"""
+            <li class="search-result">
+                <a href="{link}"><h2>{title}</h2></a>
+                <p class="description">{description}</p>
+            </li>
+            """
+
+        # End the HTML output
+        html += """
+        </ul>
+        </div>
+        </body>
+        </html>
+        """
+
+        return html
+
+    def separate_sites(self, raw_output):
+        """
+        :param raw_output: A string containing raw site data
+        :return: An array that separates this for each site
+
+        The raw data has this structure:
+        [TITEL or TITLE:INSERT_TITLE_HERE]
+        [DESCRIPTION:INSERT_DESCRIPTION_HERE]
+        [LINK:INSERT_LINK_HERE]
+
+        It repeats this structure.
+
+        The output should be an array of arrays, each containing the title, description, and link.
+        """
+
+        # Define the regex pattern allowing both "TITEL" and "TITLE"
+        pattern = re.compile(r'\[(?:TITEL|TITLE):(.*?)]\s*\[DESCRIPTION:(.*?)]\s*\[LINK:(.*?)]', re.DOTALL)
+
+        # Find all matches in the raw_output
+        matches = pattern.findall(raw_output)
+
+        # Create an array of sites
+        site_array = [list(match) for match in matches]
+
+        # if site_array empty throw error
+        if not site_array:
+            raise ValueError("Site array empty: No matches found in the raw output.")
+
+        return site_array
 
     def export_internet(self, filename="internet.json"):
         json.dump(self.internet_db, open(filename, "w+"))
