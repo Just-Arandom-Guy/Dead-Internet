@@ -13,11 +13,6 @@ Simple, first install Ollama [here](https://ollama.com/download), then pull your
 
 Due to popular demand and it not being 12am anymore I finally added a requirements.txt file! Now instead of manually installing dependencies you can just run `pip install -r requirements.txt` in the root of the project and it'll install them all for you!
 
-(If you want to manually install dependenies, follow these instructions) Next you'll need to install Python if you don't already have it, I run Python 3.10.12 (came with my Linux Mint install), then the libraries you'll need are:
-- [OpenAI](https://pypi.org/project/openai/)
-- [BeautifulSoup4](https://pypi.org/project/beautifulsoup4/)
-- [Flask](https://pypi.org/project/Flask/)
-
 Once those are installed, simply run the main.py file and navigate to http://127.0.0.1:5000 or whatever URL Flask gives you and have fun!
 
 ## Inspiration

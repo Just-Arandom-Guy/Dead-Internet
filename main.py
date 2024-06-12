@@ -5,6 +5,7 @@ from threading import Timer
 
 from ReaperEngine import *
 
+# Initialize Flask app with dynamic static folder
 app = flask.Flask(__name__)
 engine = ReaperEngine()
 
@@ -24,8 +25,20 @@ def index(path):
 
         # Generate the page
         parsed_path = urlparse("http://" + path)
-        generated_page = engine.get_page(parsed_path.netloc, path=parsed_path.path)
-        return generated_page
+        html_string = engine.get_page(parsed_path.netloc, path=parsed_path.path)
+
+        # Save the HTML string to a temporary file
+        temp_html_file = os.path.join(app.root_path, 'templates', 'temp_page.html')
+        with open(temp_html_file, 'w', encoding='utf-8') as f:
+            f.write(html_string)
+
+        # Render the temporary HTML file using render_template
+        rendered_html = flask.render_template('temp_page.html')
+
+        # Remove the temporary HTML file
+        os.remove(temp_html_file)
+
+        return rendered_html
 
     for attempt in range(3):
         try:
@@ -43,4 +56,4 @@ if __name__ == "__main__":
     Timer(1, open_browser).start()  # Wait 1 second for the server to start
 
     app.run(use_reloader=False)  # Disable the reloader if it interferes with opening the browser
-    print(engine.export_internet())
+    #print(engine.export_internet())

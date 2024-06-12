@@ -2,9 +2,16 @@ flask
 openai
 beautifulsoup4
 python-dotenv
+
+#only for remote image gen
+replicate
+requests
+
+#only for local image gen
 diffusers
 transformers
 accelerate
 
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch
+torchvision

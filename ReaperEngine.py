@@ -2,7 +2,13 @@ import json
 from openai import OpenAI
 from bs4 import BeautifulSoup
 import re
+import os
 from datetime import datetime
+import random
+
+import concurrent.futures
+import requests
+import replicate
 
 ''' About the name...
 I apologise for it sounding pretentious or whatever, but I dont care it sounds cool and cyberpunk-y(-ish)
@@ -13,27 +19,101 @@ and fits with the Dead Internet Theory theme of this little project
 class ReaperEngine:
     def __init__(self):
         # groq not local but so fast that the browsing feels quite normal
-        self.client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key="")
+        self.client = OpenAI(base_url="https://api.groq.com/openai/v1",
+                             api_key="")
         self.model = "llama3-8b-8192"
 
         # ollama local and ok with gpu but nothing compared to groq
         # self.client = OpenAI(base_url="http://localhost:11434/v1/", api_key="Dead Internet")  # Ollama is pretty cool
         # self.model = "llama3"
 
+        self.generate_images = False
+        local_img_gen = True  # True for local image gen, False for replicate api
+
+        # Not needed if local_img_gen = True
+        os.environ['REPLICATE_API_TOKEN'] = ''
+
         self.internet_db = dict()  # TODO: Exporting this sounds like a good idea, losing all your pages when you kill the script kinda sucks ngl, also loading it is a thing too
 
         self.temperature = 0.5  # Crank up for goofier webpages (but probably less functional javascript, and it will probably error out a lot)
         self.max_tokens = 4096
 
-        # 1. base prompt 2. Image prompt thingy(you can make it generate links and alt for sdxl turbo) 3. Output style CoT
+        # 1. base prompt
+        # 2. Image prompt thingy(you can make it generate links and alt for sdxl turbo)
+        # 3. Output style CoT
         self.system_prompt = "You are an expert in creating realistic webpages. You do not create sample pages, instead you create webpages that are completely realistic and look as if they really existed on the web. During this process make sure the websites are quite long and include all needed details. You do not respond with anything but HTML, starting your messages with <!DOCTYPE html> and ending them with </html>. If a requested page is not a HTML document, for example a CSS or Javascript file, write that language instead of writing any HTML."
-        self.system_prompt += " If the requested page is instead an image file or other non-text resource, attempt to generate an appropriate resource while avoiding using images. You use no images at all in your HTML, CSS or JS."
+
+        self.pipe = None
+        if self.generate_images:
+            # Generate image prompt
+            self.system_prompt += "If the requested page is instead an image file or other non-text resource, attempt to generate an appropriate resource. To make a image use the alt tag to ender a detailed description of the image for image generation. Try to include a few images on every page while making sure every image has a alt tag."
+            if local_img_gen:
+                import torch
+                from diffusers import StableDiffusionXLPipeline, UNet2DConditionModel, EulerDiscreteScheduler
+                from huggingface_hub import hf_hub_download
+                from safetensors.torch import load_file
+
+                base = "stabilityai/stable-diffusion-xl-base-1.0"
+                repo = "ByteDance/SDXL-Lightning"
+                ckpt = "sdxl_lightning_4step_unet.safetensors"  # Use the correct ckpt for your step setting!
+
+                # Load model.
+                unet = UNet2DConditionModel.from_config(base, subfolder="unet").to("cuda", torch.float16)
+                unet.load_state_dict(load_file(hf_hub_download(repo, ckpt), device="cuda"))
+                pipe = StableDiffusionXLPipeline.from_pretrained(base, unet=unet, torch_dtype=torch.float16,
+                                                                 variant="fp16").to("cuda")
+
+                # Ensure sampler uses "trailing" timesteps.
+                self.pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config,
+                                                                         timestep_spacing="trailing")
+                self.generate_image = self.generate_image_local
+            else:
+                self.generate_image = self.generate_image_replicate
+        else:
+            # Dont generate image prompt
+            self.system_prompt += " If the requested page is instead an image file or other non-text resource, attempt to generate an appropriate resource while avoiding using images. You use no images at all in your HTML, CSS or JS."
+
+        # Output style prompt
         self.system_prompt += "\n\nThe response should have two parts to it **Planning Stage**, **HTML**. First planning indicated by **Planning Stage** in which you plan out any elements(try not to do anything to complex and stick with simple but modern design. Try to avoid gradients as they often have problems) that are needed as well as any text. This should be quite detailed to create a modern realistic webpage with all required things. Make sure you plan enough to fill the entire website adequately so dont cut it short. This means you leave no placeholders and fully plan out all text. You dont only plan, but also write all text that should be present later. The text should have at least 500 words that will be on the webpage depending on the type. You do not create any code during this stage. The next stage is writing the html. To do this simpy start with <!DOCTYPE html> and generate the needed code based of the previous plan following all instructions. You have to generate all parts, none are optional **Planning Stage**, **HTML**. Stick to a dark mode color Theme and include lots of links throughout the page not just at the end but for all important things."
 
         self.search_system_prompt = "Create at least 10 different results for the query from the user. Your answer should have this format. 1. [TITLE:INSERT_TITLE_HERE] of course replace INSERT_TITLE_HERE with the actual title of the website. It should be relatively short but informative just like google results. 2. [DESCRIPTION:INSERT_DESCRIPTION_HERE] it should in a few words convey the most important info on the webpage. 3. [LINK:INSERT_LINK_HERE] It should have all needed info about the page it links to so dont shorten it at all. Here is a example of how a part of your response could look like. [TITLE:The Tree Encyclopedia: A Comprehensive Guide] \n [DESCRIPTION:Explore the world of trees, from their evolution to their uses, and get information on over 1,000 species.]\n [LINK:https://www.treecyclopedia.org/guide/history+evolution+uses+species] then just start with the next result. Repeat this for all requested results. Of course dont include any placeholders and instead replace them with proper information. Make sure you stick to the format at all times without exceptions."
 
+    def generate_image_local(self, prompt, num_outputs=1):
+        self.pipe(prompt, negative_prompt="worst quality, low quality", num_inference_steps=4,
+                  guidance_scale=0).images[0].save("output.png")
+        # TODO: Implement local image generation logic here (maybe both sdxl turbo and lightning)
+        return ["Local image generation not implemented"]
+
+    def generate_image_replicate(self, prompt, num_outputs=1):
+        # Call replicate api to generate image
+        output = replicate.run(
+            "bytedance/sdxl-lightning-4step:5f24084160c9089501c1b3545d9be3c27883ae2239b6f412990e82d4a6210f8f",
+            input={
+                "width": 1024,
+                "height": 1024,
+                "prompt": prompt,
+                "scheduler": "K_EULER",
+                "num_outputs": num_outputs,
+                "guidance_scale": 0,
+                "negative_prompt": "worst quality, low quality",
+                "num_inference_steps": 4
+            }
+        )
+
+        # Download images from replicate
+        images = []
+        for url in output:
+            # print(f"Downloading image from {url}")  # Debug output
+            response = requests.get(url)
+            if response.status_code == 200:
+                images.append(response.content)
+                # print(f"Downloaded {len(response.content)} bytes")  # Debug output
+            else:
+                raise Exception(f"Failed to download image from {url} with status code {response.status_code}")
+
+        return images
+
     def _format_page(self, dirty_html):
-        dirty_html = self.remove_images(dirty_html)
         # Teensy function to sanitize links on the page, so they link to the root of the server
         # Also to get rid of any http(s), this will help make the link database more consistent
         soup = BeautifulSoup(dirty_html, "html.parser")
@@ -55,6 +135,49 @@ class ReaperEngine:
             body.insert(0, home_button)
 
         html = str(soup)
+        return html
+
+    def insert_images(self, html, output_dir="static/images"):
+        # Create the output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Find all instances of <img...> in the HTML
+        image_tags = re.findall(r'<img.*?>', html)
+
+        # Array to store prompts, original HTML locations, and final file names
+        image_data = []
+
+        for tag in image_tags:
+            # Extract the alt text from the tag
+            alt_match = re.search(r'alt="([^"]*)"', tag)
+            if alt_match:
+                prompt = alt_match.group(1).strip()
+                file_name = f"{output_dir}/image_{random.randint(1, 1000000000)}.png"
+                image_data.append((prompt, tag, file_name))
+            else:
+                # Remove image from HTML if no alt text
+                html = html.replace(tag, '')
+
+        def generate_and_save_image(data):
+            prompt, tag, file_name = data
+            print(data)
+            images = self.generate_image(prompt)
+            image = images[0]  # Generate the image
+            with open(file_name, "wb") as img_file:
+                img_file.write(image)
+            return tag, file_name, prompt
+
+        # Use ThreadPoolExecutor to generate images in parallel
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            results = list(executor.map(generate_and_save_image, image_data))
+
+        # Update the HTML with new image paths
+        for tag, file_name, prompt in results:
+            # Make the file_name relative to the static folder
+            relative_file_name = file_name.replace(output_dir, '').lstrip('/')
+            new_tag = f'<img src="{{{{ url_for(\'static\', filename=\'images/{relative_file_name}\') }}}}" alt="{prompt}">'
+            html = html.replace(tag, new_tag)
+        print(html)
         return html
 
     def separate_html_parts(self, html):
@@ -81,7 +204,7 @@ class ReaperEngine:
 
         return html
 
-    def get_index(self):
+    def get_index(self):  # html for start search page
         return """
         <!DOCTYPE html>
 <html>
@@ -159,7 +282,7 @@ class ReaperEngine:
 
         # Append to system prompt
         system_prompt = self.system_prompt + f"Today is the {formatted_date}"
-        
+
         # Construct the basic prompt
         prompt = f"Give me a classic geocities-style webpage from the fictional site of '{url}' at the resource path of '{path}'. Make sure all links generated either link to an external website, or if they link to another resource on the current website have the current url prepended ({url}) to them. For example if a link on the page has the href of 'help' or '/help', it should be replaced with '{url}/path'. All your links must use absolute paths, do not shorten anything. Make the page look nice and unique using internal CSS stylesheets, don't make the pages look boring or generic."
         # TODO: I wanna add all other pages to the prompt so the next pages generated resemble them, but since Llama 3 is only 8k context I hesitate to do so --> summary of previous page
@@ -167,7 +290,7 @@ class ReaperEngine:
         # Add other pages to the prompt if they exist
         if url in self.internet_db and len(self.internet_db[url]) > 1:
             pass
-        
+
         # Generate the page
         generated_page_completion = self.client.chat.completions.create(messages=[
             {
@@ -185,11 +308,20 @@ class ReaperEngine:
 
         # Get and format the page
         generated_page = generated_page_completion.choices[0].message.content
-        with open("curpage.html", "w+") as f:
+        with open("templates/curpage.html", "w+") as f:
             f.write(generated_page)
 
         # separate the different parts of the answer before further processing
         generated_page = self.separate_html_parts(generated_page)
+
+        if self.generate_images:
+            # find alt tags and then batch request images
+            generated_page = self.insert_images(generated_page)
+        else:
+            # remove images as the browser will otherwise try to open pages that will never get seen --> useless traffic
+            generated_page = self.remove_images(generated_page)
+
+        # clean up links and add home button
         generated_page = self._format_page(generated_page)
 
         # Add the page to the database
@@ -200,7 +332,7 @@ class ReaperEngine:
 
         return generated_page
 
-    def get_search(self, query):
+    def get_search(self, query):  # Generate search results
         current_time = datetime.now()
         # Format date and time
         formatted_date = current_time.strftime("%A, %d %B %Y %H:%M:%S")
@@ -208,6 +340,7 @@ class ReaperEngine:
         # Append to system prompt
         search_system_prompt = self.search_system_prompt + f"Today is the {formatted_date}"
 
+        # Generate possible search results
         search_page_sites = self.client.chat.completions.create(messages=[
             {
                 "role": "system",
@@ -222,7 +355,10 @@ class ReaperEngine:
             max_tokens=self.max_tokens
         )
 
+        # Separate the possible search results for use by create search site
         site_array = self.separate_sites(search_page_sites.choices[0].message.content)
+
+        # Create the html for the search site
         html = self.create_search_site(site_array, query)
         html = self._format_page(html)
         return html
@@ -330,7 +466,7 @@ class ReaperEngine:
 
         It repeats this structure.
 
-        The output should be an array of arrays, each containing the title, description, and link.
+        The output is an array of arrays, each containing the title, description, and link.
         """
 
         # Define the regex pattern allowing both "TITEL" and "TITLE"
